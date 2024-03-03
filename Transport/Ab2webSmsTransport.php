@@ -72,37 +72,43 @@ class Ab2webSmsTransport extends AbstractSmsApi
      * @return bool|string
      */
     public function sendSms(Lead $contact, $content)
-    {
-        $number = $contact->getLeadPhoneNumber();
-        if (empty($number)) {
-            return false;
+{
+    $number = $contact->getLeadPhoneNumber();
+    if (empty($number)) {
+        return false;
+    }
+
+    try {
+        $number = substr($this->sanitizeNumber($number), 1);
+    } catch (NumberParseException $e) {
+        $this->logger->addInfo('Invalid number format. ', ['exception' => $e]);
+        return $e->getMessage();
+    }
+
+    try {
+        if (!$this->connected && !$this->configureConnection()) {
+            throw new \Exception("Ab2webSms MSG is not configured properly.");
         }
 
-        try {
-            $number = substr($this->sanitizeNumber($number), 1);
-        } catch (NumberParseException $e) {
-            $this->logger->addInfo('Invalid number format. ', ['exception' => $e]);
-            return $e->getMessage();
+        $content = $this->sanitizeContent($content, $contact);
+        if (empty($content)) {
+            throw new \Exception('Message content is Empty.');
         }
+        $response = $this->send($number, $content);
 
-        try {
-            if (!$this->connected && !$this->configureConnection()) {
-                throw new \Exception("Ab2webSms MSG is not configured properly.");
-            }
-
-            $content = $this->sanitizeContent($content, $contact);
-            if (empty($content)) {
-                throw new \Exception('Message content is Empty.');
-            }
-
-            $response = $this->send($number, $content);
+        if ($response === true) {
             $this->logger->addInfo("Ab2webSms MSG request succeeded. ", ['response' => $response]);
             return true;
-        } catch (\Exception $e) {
-            $this->logger->addError("Ab2webSms MSG request failed. ", ['exception' => $e]);
-            return $e->getMessage();
+        } else {
+            $this->logger->addError("Ab2webSms MSG request failed. ", ['response' => $response]);
+            return false;
         }
+    } catch (\Exception $e) {
+        $this->logger->addError("Ab2webSms MSG request failed. ", ['exception' => $e]);
+        return $e->getMessage();
     }
+}
+
 
     /**
      * @param integer   $number
@@ -114,42 +120,54 @@ class Ab2webSmsTransport extends AbstractSmsApi
      */
     protected function send($number, $content)
     {
+        $url = "https://sms.ab2web.com/services/send.php";
+        $postData = [
+            'key' => $this->api_key,
+            'number' => $number,
+            'message' => $content,
+            'type' => "sms",
+            'prioritize' => 1
+        ];
 
-        // Inicializa cURL
         $ch = curl_init();
-
-        // Configura la URL a la que se va a enviar la solicitud POST
-        curl_setopt($ch, CURLOPT_URL, "https://sms.ab2web.com/services/send.php");
-
-        // Indica a cURL que queremos hacer una solicitud POST
+        curl_setopt($ch, CURLOPT_URL, $url);
         curl_setopt($ch, CURLOPT_POST, true);
-
-        // Adjunta los datos que se enviarán con la solicitud POST
-        curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query(array(
-            "key" => $this->api_key,
-            "number" => $number,
-            "message" => $content,
-            "type" => "sms",
-            "prioritize" => "1"
-        )));
-
-        // Devuelve la respuesta como una cadena en lugar de mostrarla directamente
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-
-        // Ignora la verificación de SSL
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-
-        // Ejecuta la solicitud POST
+        curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($postData));
         $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
 
-        // Cierra el recurso cURL y libera recursos del sistema
+        if (curl_errno($ch)) {
+            $error = curl_error($ch);
+            curl_close($ch);
+            $this->logger->addError("Curl error while making API request.", ['error' => $error]);
+            return false;
+        }
+
         curl_close($ch);
 
-        // Imprime la respuesta de la solicitud POST
-        echo $response;
+        if ($httpCode == 200) {
+            $responseData = json_decode($response, true);
+            if ($responseData === null) {
+                $this->logger->addError("Error decoding API response.", ['response' => $response]);
+                return false;
+            }
 
-        $this->logger->addInfo("Ab2webSms MSG API request intiated. ", ['url' => $url]);
+            if (!empty($responseData['success']) && $responseData['success'] === true) {
+                $messageId = $responseData['data']['messages'][0]['ID'] ?? 'Unknown';
+                $this->logger->addInfo("SMS sent successfully.", ['messageId' => $messageId, 'response' => $responseData]);
+                return true;
+            } else {
+                $errorMessage = $responseData['error']['message'] ?? 'Unknown error';
+                $this->logger->addError("API request failed.", ['error' => $errorMessage, 'response' => $responseData]);
+                return false; // Aquí puedes elegir lanzar una excepción si eso se alinea mejor con cómo deseas manejar los errores de API.
+            }
+        } else {
+            $this->logger->addError("HTTP request failed.", ['httpCode' => $httpCode, 'response' => $response]);
+            return false;
+        }
     }
+
 
     /**
      * @param string $number
@@ -209,4 +227,6 @@ class Ab2webSmsTransport extends AbstractSmsApi
             '{contact_phone}' => $contact->getLeadPhoneNumber(),
         ));
     }
+
+
 }
