@@ -161,7 +161,7 @@ class Ab2webSmsTransport extends AbstractSmsApi
     protected function sanitizeNumber($number)
     {
         $util = PhoneNumberUtil::getInstance();
-        $parsed = $util->parse($number, 'IN');
+        $parsed = $util->parse($number, 'CO');
 
         return $util->format($parsed, PhoneNumberFormat::E164);
     }
